@@ -1,0 +1,8 @@
+# Escludi dal pacchetto Composer (git archive) tutto ciò che non è il plugin Laravel.
+# Così chi installa da GitHub riceve solo config/, src/, resources/, routes/, composer.json.
+/devia export-ignore
+/docs export-ignore
+/chatbot export-ignore
+docker-compose.yml export-ignore
+.env.example export-ignore
+README.md export-ignore
