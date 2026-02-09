@@ -6,7 +6,7 @@
   'use strict';
 
   // Bump this when you change the JS to verificare facilmente se l'asset è aggiornato.
-  var KIRA_CLIENT_VERSION = '2026-02-06-01';
+  var KIRA_CLIENT_VERSION = '2026-02-06-02';
 
   // Stato persistito a livello di tab: ci serve per ricordare se la sessione
   // Kira era aperta anche dopo un cambio pagina. Usiamo sessionStorage così
@@ -242,6 +242,8 @@
     var container = getChatContainer();
     if (container) container.innerHTML = '';
     showFloat();
+    // Riattiva il listener globale del comando vocale (es. "ehi devi") quando la chat viene chiusa.
+    try { startGlobalTriggerListener(); } catch (e) {}
   }
 
   /**
