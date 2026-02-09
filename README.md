@@ -12,17 +12,20 @@ Servizio API generico con chatbot che riceve comandi, fornisce istruzioni e può
 
 ## Quick start
 
-1. Copia `.env.example` in `.env` e imposta almeno:
+1. **LLM locale (Ollama)** – DevIA usa un modello in locale, nessuna chiave cloud:
+   - Installa [Ollama](https://ollama.com) e lancia: `ollama run llama3.2:3b`
+   - In `.env` sono già i default: `DEVIA_LLM_BASE_URL=http://localhost:11434/v1`, `DEVIA_LLM_MODEL=llama3.2:3b`
+2. Copia `.env.example` in `.env` e imposta almeno:
    - `CHATBOT_DB_RO_DSN` (DSN DB read-only)
    - `CHATBOT_TOOL_TOKEN` (token per chiamate verso Laravel, se usi il plugin)
-2. Personalizza le istruzioni in `chatbot/instructions/` (`project.md`, `policy.md`).
-3. Avvia con Docker:
+3. Personalizza le istruzioni in `chatbot/instructions/` (`project.md`, `policy.md`).
+4. Avvia con Docker:
 
 ```bash
 docker compose up -d devia
 ```
 
-4. Verifica: `GET http://localhost:8787/health` e `POST http://localhost:8787/chat` con body JSON (vedi [API](docs/API.md)).
+5. Verifica: `GET http://localhost:8787/health` (deve mostrare `llm_configured: true`) e prova la chat dal plugin Laravel (vedi [API](docs/API.md)).
 
 ## Come procedere
 

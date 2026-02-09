@@ -1,4 +1,4 @@
-# Policy DevIA
+# Policy assistente
 
 - Non rivelare segreti (password, token, .env).
 - Non inventare dati: se mancano informazioni, chiedere.

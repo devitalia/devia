@@ -10,7 +10,7 @@ Attualmente gli endpoint non richiedono autenticazione. In produzione si può ag
 
 ## GET /health
 
-Verifica rapida dello stato del servizio: istruzioni caricate e presenza DSN DB.
+Verifica rapida dello stato del servizio: istruzioni, DB e LLM (configurazione e check reali).
 
 **Risposta** (200):
 
@@ -20,13 +20,27 @@ Verifica rapida dello stato del servizio: istruzioni caricate e presenza DSN DB.
   "service": "DevIA",
   "has_project_md": true,
   "has_policy_md": true,
-  "db_configured": true
+  "repo_mounted": true,
+  "repo_code_loaded": false,
+  "repo_code_length": 0,
+  "db_configured": true,
+  "db_ok": true,
+  "llm_configured": true,
+  "llm_ok": true,
+  "llm_model": "mistral"
 }
 ```
 
 - `has_project_md`: contenuto presente in `project.md`
 - `has_policy_md`: contenuto presente in `policy.md`
-- `db_configured`: `DEVIA_DB_DSN` (o `CHATBOT_DB_RO_DSN`) impostato
+- `repo_mounted`: `DEVIA_REPO_PATH` impostato (path repo codice intranet)
+- `repo_code_loaded`: true se è stato caricato almeno un file PHP da `/repo` (es. `app/Models`)
+- `repo_code_length`: numero di caratteri di codice caricato (0 se mount assente o repo senza PHP Laravel)
+- `db_configured`: DSN DB impostato
+- `db_ok`: **check reale** — connessione al DB riuscita (ping)
+- `llm_configured`: base URL o API key LLM impostati
+- `llm_ok`: **check reale** — API LLM raggiungibile (con Ollama: GET /api/tags; con solo API key non viene fatta richiesta)
+- `llm_model`: modello configurato (es. `mistral`, `llama3.2:3b`)
 
 ---
 
@@ -45,6 +59,53 @@ Verifica la connessione al database configurato.
 **Errori**:
 
 - **500**: `DEVIA_DB_DSN` non configurato o DB non raggiungibile (dettaglio nel body).
+
+---
+
+## GET /repo/check
+
+Verifica repo (modelli intranet caricati) e connessione DB in un’unica chiamata.
+
+**Risposta** (200):
+
+```json
+{
+  "ok": true,
+  "repo_files_count": 70,
+  "repo_files": ["app/Models/User.php", "app/Models/Department.php", ...],
+  "repo_code_length": 79980,
+  "db_configured": true,
+  "db_ok": true
+}
+```
+
+- `repo_files`: primi 50 file (app/Models/*.php) caricati da `/repo`
+- `db_ok`: risultato del ping al DB (null se DB non configurato)
+
+---
+
+## POST /debug/context
+
+Stesso body di `POST /chat`, ma **non chiama l’LLM**. Restituisce il contesto che verrebbe inviato (user, anteprima system prompt, schema DB) per verificare che i dati siano corretti e capire se un rifiuto viene dall’LLM.
+
+**Body**: come per `POST /chat` (es. `user`, `message`, `conversation_id`, `app_url`).
+
+**Risposta** (200):
+
+```json
+{
+  "user_received": { "id": "123", "name": "Mario", "email": "mario@..." },
+  "message": "dammi i dati su di me",
+  "db_schema_loaded": true,
+  "db_schema_length": 5000,
+  "db_schema_preview": "tabelle e colonne...",
+  "system_prompt_length": 3500,
+  "system_prompt_preview": "Sei DevIA... === DATI UTENTE ...",
+  "llm_model": "llama3.2:3b"
+}
+```
+
+Usare questo endpoint per confermare che user e schema DB sono presenti nel prompt; se sì e l’LLM risponde comunque «non posso accedere ai dati», il blocco è del modello (vedi [Configurazione – Modelli LLM](CONFIGURATION.md#modelli-llm-consigliati)).
 
 ---
 

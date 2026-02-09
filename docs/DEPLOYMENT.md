@@ -42,6 +42,15 @@ services:
 - **Repo**: `./` → `/repo` (read-only, per RAG futuro).
 - **DB**: DSN da `.env` (`CHATBOT_DB_RO_DSN`). Se il DB è in un altro stack, assicurarsi che la rete Docker permetta a `devia` di raggiungere il host/porta del DB.
 
+### LLM locale (Ollama)
+
+DevIA usa un modello **locale** (Ollama) per default. Se **DevIA gira in Docker** e **Ollama è sull’host**:
+
+- In `.env` imposta: `DEVIA_LLM_BASE_URL=http://host.docker.internal:11434/v1` (Windows/Mac).
+- Su Linux aggiungi al servizio `devia` in `docker-compose.yml`: `extra_hosts: ["host.docker.internal:host-gateway"]` e usa lo stesso URL.
+
+Se DevIA e Ollama sono entrambi sull’host (nessun Docker per DevIA), `http://localhost:11434/v1` va bene.
+
 ### Dipendenza da DB
 
 Se il DB è definito nello stesso `docker-compose.yml`:

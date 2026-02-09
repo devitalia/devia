@@ -72,11 +72,27 @@ Poi: `composer update devia/plugin-laravel`.
   - Appare il pannello chat.
 - **Chat testuale**: l’utente scrive; ogni messaggio va a `POST /devia/chat`; Laravel inoltra a DevIA con user, message, conversation_id. DevIA risponde usando DB e repo (configurati lato deploy); la risposta viene mostrata in chat.
 
+### Vedere la chiamata (debug)
+
+Per ispezionare il contesto inviato all'LLM (system prompt, dati utente, messaggio, schema DB) **senza** effettuare la chiamata alla chat, usa:
+
+- **POST /devia/debug-context** — stesso body di `POST /devia/chat` (`message` obbligatorio, `conversation_id` opzionale). La risposta contiene `user_received`, `system_prompt_preview`, `message`, `db_schema_preview`, `llm_model`, ecc. (vedi [API.md](API.md) – endpoint `POST /debug/context` del backend).
+
+Esempio con curl (sostituisci base URL e messaggio):
+
+```bash
+curl -X POST http://localhost:8000/devia/debug-context \
+  -H "Content-Type: application/json" \
+  -H "Cookie: ..." \
+  -d '{"message":"chi sono?"}'
+```
+
 ## Config
 
 | Variabile | Descrizione |
 |-----------|-------------|
 | `DEVIA_API_URL` | URL base del servizio DevIA (es. `http://localhost:8787`) |
+| `DEVIA_CHAT_TIMEOUT` | Timeout in secondi per la chiamata a DevIA (default: 120; utile se l’LLM è lento) |
 | `DEVIA_VOICE_TRIGGER` | Frase vocale per aprire la sessione (default: `ehi devia`) |
 | `DEVIA_LARAVEL_TOOL_TOKEN` | (Futuro) Token per chiamate da DevIA al sito |
 
@@ -84,6 +100,7 @@ Poi: `composer update devia/plugin-laravel`.
 
 - `GET /devia/session` – Apertura sessione: restituisce user e conversation_id (usa auth Laravel).
 - `POST /devia/chat` – Invia messaggio a DevIA (proxy con user dalla sessione).
+- `POST /devia/debug-context` – Restituisce il contesto che verrebbe inviato all'LLM (system prompt, user, message, schema DB) senza chiamare la chat; utile per vedere la chiamata in debug.
 
 ## Licenza
 

@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "Kira by Devitalia",
+  "description": "Estensione opzionale che ascolta le risposte di Kira sull'intranet Devitalia e le legge ad alta voce, continuando anche tra i cambi pagina.",
+  "version": "0.1.0",
+  "permissions": [
+    "offscreen"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://localhost/*",
+        "https://*/dashboard*",
+        "https://*/personale*",
+        "https://*/sick-leave-requests*",
+        "https://*/timbrature*",
+        "https://*/devia/*"
+      ],
+      "js": [
+        "content-script.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "icons": {
+    "16": "icon-16.png",
+    "32": "icon-32.png",
+    "48": "icon-48.png",
+    "128": "icon-128.png"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
+  }
+}
+
