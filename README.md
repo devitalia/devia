@@ -11,7 +11,9 @@ FastAPI avviabile con Docker. La home `/` apre direttamente Swagger (`/docs`).
 - `GET /getddtdevtec/state` lista i record processati nel DB SQLite.
 - `GET /getddtdevtec/email/sync` elabora nuove email abilitate in `senders.yaml`, legge CSV/PDF allegati e invia i record all'intranet.
 - `DELETE /getddtdevtec/state/{progressive_id}` cancella un record tramite progressivo (`rowid` SQLite).
-- `POST /features/echo` endpoint test.
+- `POST /features/echo` endpoint test (menu `EAGLE` in Swagger).
+- `GET /eagle/health` endpoint base dedicato cliente EAGLE.
+- `POST /eagle/echo` endpoint test dedicato cliente EAGLE.
 
 ## Configurazione mail
 
