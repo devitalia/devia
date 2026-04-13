@@ -1,67 +1,21 @@
-version: "3.9"
-
 services:
-  devia:
-    build: ./devia
-    container_name: devia
+  api:
+    build: .
+    container_name: devia-api
     env_file:
       - .env
-    environment:
-      DEVIA_NAME: Kira
-      DEVIA_INSTRUCTIONS_PATH: /instructions
-      DEVIA_DEBUG: "1"
-      # DB read-only dal tuo .env (per progetto)
-      DEVIA_DB_DSN: ${CHATBOT_DB_RO_DSN}
-      # Base URL Laravel visto dal container DevIA.
-      # Con rete devia-shared: in .env imposta DEVIA_LARAVEL_BASE_URL=http://timone-nginx:80/devia
-      DEVIA_LARAVEL_BASE_URL: ${DEVIA_LARAVEL_BASE_URL:-http://host.docker.internal:37000/devia}
-      DEVIA_LARAVEL_TOOL_TOKEN: ${CHATBOT_TOOL_TOKEN}
-      # TTS / Piper (voce italiana femminile Paola; velocità 0.85 nel .onnx.json)
-      DEVIA_TTS_ENABLED: "1"
-      DEVIA_TTS_MODEL_PATH: /models/it_IT-paola-medium.onnx
-    volumes:
-      - ./chatbot/instructions:/instructions:ro
-      # Repo intranet Laravel (app in intranet/laravel) per caricare app/Models
-      - ../intranet/laravel:/repo:ro
-      # Modelli Piper TTS montati read-only
-      - ./piper-models:/models:ro
     ports:
       - "8787:8787"
+    volumes:
+      - ./app:/app/app
+      - ./config:/app/config
+      - ./data:/app/data
     networks:
       - default
-      - devia-shared
-    # se hai già un service "db" nel compose, scommenta e adatta il nome servizio:
-    # depends_on:
-    #   - db
-
-  # Esempio opzionale di servizio app Laravel (adatta al tuo progetto)
-  # app:
-  #   build: ./app
-  #   container_name: app
-  #   env_file:
-  #     - .env
-  #   ports:
-  #     - "8000:8000"
-  #   depends_on:
-  #     - db
-  #
-  # db:
-  #   image: mysql:8.0
-  #   container_name: db
-  #   environment:
-  #     MYSQL_DATABASE: ${DB_DATABASE}
-  #     MYSQL_USER: ${DB_USERNAME}
-  #     MYSQL_PASSWORD: ${DB_PASSWORD}
-  #     MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
-  #   volumes:
-  #     - db_data:/var/lib/mysql
-  #   ports:
-  #     - "3306:3306"
+      - intranet_shared
+    restart: unless-stopped
 
 networks:
-  devia-shared:
+  intranet_shared:
     external: true
-
-volumes:
-  db_data:
-
+    name: timone_timone

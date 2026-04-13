@@ -1,81 +1,70 @@
-# DevIA
+# DevIA API
 
-Servizio API generico con chatbot che riceve comandi, fornisce istruzioni e può elaborare operazioni. Pensato per fare coppia con un **plugin Laravel** installato nei tuoi siti: il sito ha accesso al repository GitHub e al database relativo, così l’IA può rispondere correttamente a tutte le richieste.
+FastAPI avviabile con Docker. La home `/` apre direttamente Swagger (`/docs`).
 
-## Cosa fa DevIA
+## Endpoint attuali
 
-- **Chatbot via API**: riceve messaggi dall’utente e risponde in base a istruzioni di progetto e policy.
-- **Istruzioni contestuali**: carica `project.md` e `policy.md` dal path configurato (es. repo/chatbot).
-- **Database read-only**: può interrogare un DB MySQL per impostazioni e dati di contesto.
-- **Integrazione Laravel**: tramite plugin sui siti, può ricevere comandi e (in futuro) invocare azioni sull’app Laravel (URL + token).
-- **Estensibilità**: preparato per RAG su codice (mount del repo) e per tool/azioni verso Laravel.
+- `GET /health` ping rapido.
+- `GET /getddtdevtec` esegue login al portale COMET, apre `DDT e fatture`, clicca `Cerca`, apre i dettagli con `Visualizza`, importa testata+righe in SQLite e scarica il PDF.
+- `GET /getddtdevtec/comet/state` lista i DDT COMET importati.
+- `DELETE /getddtdevtec/comet/state/{progressive_id}` cancella un DDT importato (e prova a cancellare i file CSV/PDF locali).
+- `GET /getddtdevtec/state` lista i record processati nel DB SQLite.
+- `GET /getddtdevtec/email/sync` elabora nuove email abilitate in `senders.yaml`, legge CSV/PDF allegati e invia i record all'intranet.
+- `DELETE /getddtdevtec/state/{progressive_id}` cancella un record tramite progressivo (`rowid` SQLite).
+- `POST /features/echo` endpoint test.
 
-## Quick start
+## Configurazione mail
 
-1. **LLM locale (Ollama)** – DevIA usa un modello in locale, nessuna chiave cloud:
-   - Installa [Ollama](https://ollama.com) e lancia: `ollama run llama3.2:3b`
-   - In `.env` sono già i default: `DEVIA_LLM_BASE_URL=http://localhost:11434/v1`, `DEVIA_LLM_MODEL=llama3.2:3b`
-2. Copia `.env.example` in `.env` e imposta almeno:
-   - `CHATBOT_DB_RO_DSN` (DSN DB read-only)
-   - `CHATBOT_TOOL_TOKEN` (token per chiamate verso Laravel, se usi il plugin)
-3. Personalizza le istruzioni in `chatbot/instructions/` (`project.md`, `policy.md`).
-4. Avvia con Docker:
+1. Copia `.env.example` in `.env` e imposta almeno:
+   - `MAIL_USERNAME`
+   - `MAIL_PASSWORD`
+2. Modifica `config/senders.yaml` per la lista mittenti e requisiti attachment (`require_csv`, `require_pdf`) e codice fornitore intranet (`supplier_id`).
+
+## Configurazione COMET
+
+Imposta in `.env`:
+
+- `COMET_BASE_URL=https://www.gruppocomet.it`
+- `COMET_USERNAME=...`
+- `COMET_PASSWORD=...`
+- `COMET_SUPPLIER_CODE=...` (codice fornitore fisso da inviare all'intranet; se vuoto usa `COMET_USERNAME`)
+- `COMET_DOWNLOAD_DIR=data/downloads`
+- `INTRANET_API_URL=...`
+- `INTRANET_API_TOKEN=...`
+- `INTRANET_SEND_PDF_BASE64=true` (se `true`, invia anche il PDF codificato base64 nel payload)
+
+Per ogni DDT importato viene creato un payload JSON pronto per l'invio all'intranet:
+
+- `intranet_payload.testata`
+- `intranet_payload.righe`
+
+## Avvio rapido
 
 ```bash
-docker compose up -d devia
+cp .env.example .env
+docker compose up --build -d
 ```
 
-5. Verifica: `GET http://localhost:8787/health` (deve mostrare `llm_configured: true`) e prova la chat dal plugin Laravel (vedi [API](docs/API.md)).
+Apri [http://localhost:8787](http://localhost:8787) per Swagger UI.
 
-## Come procedere
+## Verifiche
 
-Per avviare il backend e integrare il plugin Laravel nel tuo sito, segui la guida **[Come procedere](docs/COME_PROCEDERE.md)**:
-
-1. Avviare DevIA (Docker o uvicorn).
-2. Nel progetto Laravel: aggiungere il repo GitHub, `composer require devia/plugin-laravel`, publish config/asset, impostare `DEVIA_API_URL` in `.env`, inserire `@devia` nel layout.
-3. Verificare in browser: dire “ehi DevIa” e usare la chat.
-
-## Documentazione
-
-| Documento | Contenuto |
-|-----------|-----------|
-| [Architettura](docs/ARCHITECTURE.md) | Architettura del servizio, flussi chat, integrazione Laravel e uso di GitHub/DB |
-| [API](docs/API.md) | Riferimento endpoint (health, db/ping, chat) |
-| [Configurazione](docs/CONFIGURATION.md) | Variabili d’ambiente, istruzioni (project.md, policy.md) |
-| [Plugin Laravel](docs/LARAVEL_PLUGIN.md) | Come funziona l’integrazione con il plugin Laravel sui siti |
-| [Come procedere](docs/COME_PROCEDERE.md) | Istruzioni operative: avviare DevIA e integrare il plugin Laravel |
-| [Installazione Laravel](docs/INSTALLAZIONE_LARAVEL.md) | Dettaglio installazione plugin (da GitHub o path locale) |
-| [Deploy](docs/DEPLOYMENT.md) | Docker, docker-compose e varianti di deploy |
-
-## Struttura progetto
-
-```
-devia/
-├── composer.json           # Package Laravel (devia/plugin-laravel) – installabile da GitHub
-├── config/                 # Config plugin Laravel
-├── src/                    # Provider e controller plugin Laravel
-├── resources/              # View e JS del widget (voce “ehi DevIa”, chat)
-├── routes/                 # Route /devia/session e /devia/chat
-├── chatbot/instructions/  # Istruzioni per l’IA (project.md, policy.md)
-├── devia/                  # Servizio FastAPI
-│   ├── app/
-│   │   ├── main.py         # Endpoint e logica chat
-│   │   ├── config.py       # Settings da env
-│   │   ├── db.py           # Connessione DB
-│   │   └── instructions.py # Caricamento istruzioni
-│   ├── Dockerfile
-│   └── requirements.txt
-├── docker-compose.yml
-├── .env.example
-└── docs/                   # Documentazione
+```bash
+curl http://localhost:8787/health
+curl http://localhost:8787/getddtdevtec
+curl http://localhost:8787/getddtdevtec/comet/state
+curl -X DELETE http://localhost:8787/getddtdevtec/comet/state/1
+curl http://localhost:8787/getddtdevtec/state
+curl -X DELETE http://localhost:8787/getddtdevtec/state/1
 ```
 
-## Requisiti
+## Stato locale ingestione
 
-- Docker (per esecuzione container)
-- MySQL (DSN in `.env`)
-- Per integrazione completa: sito Laravel con plugin DevIA + accesso a repo GitHub e DB
+- DB deduplica: `data/mail_state.db`
+- Ultimo UID processato: tabella `state_meta` dentro SQLite (`key=last_email_uid`)
 
-## Licenza
+## Stop
 
-Privato / uso interno.
+```bash
+docker compose down
+```

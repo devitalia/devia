@@ -1,0 +1,11 @@
+senders:
+  - email: "do-not-reply@gruppocomet.it"
+    supplier_id: 16992
+    enabled: false
+    require_pdf: truevai lancia
+    require_csv: true
+  - email: "jobedp.italia@sonepar.it"
+    supplier_id: 17015
+    enabled: true
+    require_pdf: true
+    require_csv: true
