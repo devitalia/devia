@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     mail_imap_port: int = 993
     mail_username: str = ""
     mail_password: str = ""
+    mail_import_since: str = "2026-01-01"
+    mail_first_import_full_scan: bool = True
     senders_yaml_path: str = "config/senders.yaml"
     mail_state_db_path: str = "data/mail_state.db"
     comet_base_url: str = "https://www.gruppocomet.it"
@@ -22,6 +24,7 @@ class Settings(BaseSettings):
     comet_supplier_code: str = ""
     comet_download_dir: str = "data/downloads"
     comet_headless: bool = True
+    comet_import_since: str = "2026-01-01"
     intranet_api_url: str = ""
     intranet_api_token: str = ""
     intranet_send_pdf_base64: bool = True

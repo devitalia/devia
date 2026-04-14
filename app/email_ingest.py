@@ -7,7 +7,7 @@ import json
 import re
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from email import message_from_bytes
 from email.header import decode_header
@@ -30,6 +30,20 @@ class SenderRule:
     require_csv: bool = False
     require_pdf: bool = False
     enabled: bool = True
+
+
+def _parse_yyyy_mm_dd(value: str, fallback: date) -> date:
+    raw = (value or "").strip()
+    if not raw:
+        return fallback
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").date()
+    except ValueError:
+        return fallback
+
+
+def _to_imap_since(date_value: date) -> str:
+    return date_value.strftime("%d-%b-%Y")
 
 
 def _load_sender_rules() -> dict[str, SenderRule]:
@@ -501,9 +515,15 @@ def delete_processed_message(progressive_id: int) -> dict[str, Any]:
     return {"deleted": deleted, "id": progressive_id}
 
 
-def import_new_messages() -> dict[str, Any]:
+def import_new_messages(*, date_from: date | None = None, date_to: date | None = None) -> dict[str, Any]:
     now = datetime.now(UTC)
     fetch_limit = max(1, settings.mail_fetch_limit)
+    default_since = date(2026, 1, 1)
+    import_since = _parse_yyyy_mm_dd(settings.mail_import_since, default_since)
+    sync_from = date_from or import_since
+    sync_to = date_to or now.date()
+    if sync_to < sync_from:
+        sync_to = sync_from
 
     rules = _load_sender_rules()
     if not rules:
@@ -526,11 +546,21 @@ def import_new_messages() -> dict[str, Any]:
     latest_uid_processed: str | None = None
 
     try:
+        last_uid = _get_last_email_uid(conn)
+        first_import = not last_uid
         with imaplib.IMAP4_SSL(settings.mail_imap_host, settings.mail_imap_port) as mailbox:
             mailbox.login(settings.mail_username, settings.mail_password)
             mailbox.select("INBOX")
 
-            status, data = mailbox.uid("search", None, "ALL")
+            next_day = sync_to + timedelta(days=1)
+            status, data = mailbox.uid(
+                "search",
+                None,
+                "SINCE",
+                _to_imap_since(sync_from),
+                "BEFORE",
+                _to_imap_since(next_day),
+            )
             if status != "OK":
                 return {
                     "status": "imap_search_error",
@@ -540,7 +570,10 @@ def import_new_messages() -> dict[str, Any]:
                 }
 
             uids = [u for u in data[0].decode().split() if u]
-            uids_to_scan = list(reversed(uids[-fetch_limit:]))
+            if first_import and settings.mail_first_import_full_scan:
+                uids_to_scan = list(reversed(uids))
+            else:
+                uids_to_scan = list(reversed(uids[-fetch_limit:]))
             for uid in uids_to_scan:
                 status, msg_data = mailbox.uid("fetch", uid, "(RFC822)")
                 if status != "OK" or not msg_data or not msg_data[0]:
@@ -555,6 +588,9 @@ def import_new_messages() -> dict[str, Any]:
                 subject = str(email_message.get("Subject", "")).strip()
                 message_id = str(email_message.get("Message-ID", "")).strip() or None
                 received_at = _parse_received_at(email_message, fallback=now)
+                received_date = received_at.date()
+                if received_date < sync_from or received_date > sync_to:
+                    continue
 
                 sender_rule = rules.get(sender)
                 if not sender_rule or not sender_rule.enabled:
@@ -631,6 +667,10 @@ def import_new_messages() -> dict[str, Any]:
 
     return {
         "status": "ok",
+        "first_import_mode": first_import and settings.mail_first_import_full_scan,
+        "mail_import_since": import_since.isoformat(),
+        "sync_from": sync_from.isoformat(),
+        "sync_to": sync_to.isoformat(),
         "fetch_limit": fetch_limit,
         "scanned_uids": len(uids_to_scan) if "uids_to_scan" in locals() else 0,
         "imported_count": len(imported),

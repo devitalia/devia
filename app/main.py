@@ -1,3 +1,6 @@
+import logging
+from datetime import datetime, timedelta
+
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
@@ -21,6 +24,7 @@ openapi_tags = [
 ]
 
 app = FastAPI(title=settings.app_name, openapi_tags=openapi_tags)
+logger = logging.getLogger("devia.scheduler")
 
 
 class EchoPayload(BaseModel):
@@ -40,6 +44,26 @@ def health() -> dict[str, str]:
 @app.get("/getddtdevtec", tags=["INTRANET"])
 def getddtdevtec() -> dict:
     return sync_comet_ddt()
+
+
+@app.get("/getddtdevtec/initial-import", tags=["INTRANET"])
+def getddtdevtec_initial_import() -> dict[str, dict | str]:
+    up_to_day = (datetime.utcnow() - timedelta(days=1)).date()
+    return {
+        "up_to_day": up_to_day.isoformat(),
+        "comet": sync_comet_ddt(date_to=up_to_day),
+        "email": import_new_messages(date_to=up_to_day),
+    }
+
+
+@app.get("/getddtdevtec/daily-sync", tags=["INTRANET"])
+def getddtdevtec_daily_sync() -> dict[str, dict | str]:
+    target_day = (datetime.utcnow() - timedelta(days=1)).date()
+    return {
+        "target_day": target_day.isoformat(),
+        "comet": sync_comet_ddt(date_from=target_day, date_to=target_day),
+        "email": import_new_messages(date_from=target_day, date_to=target_day),
+    }
 
 
 @app.get("/getddtdevtec/comet/state", tags=["INTRANET"])

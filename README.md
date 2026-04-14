@@ -20,6 +20,8 @@ FastAPI avviabile con Docker. La home `/` apre direttamente Swagger (`/docs`).
 1. Copia `.env.example` in `.env` e imposta almeno:
    - `MAIL_USERNAME`
    - `MAIL_PASSWORD`
+   - `MAIL_IMPORT_SINCE=2026-01-01` (filtro minimo data email)
+   - `MAIL_FIRST_IMPORT_FULL_SCAN=true` (al primo run prende tutte le email dal `MAIL_IMPORT_SINCE`)
 2. Modifica `config/senders.yaml` per la lista mittenti e requisiti attachment (`require_csv`, `require_pdf`) e codice fornitore intranet (`supplier_id`).
 
 ## Configurazione COMET
@@ -31,6 +33,7 @@ Imposta in `.env`:
 - `COMET_PASSWORD=...`
 - `COMET_SUPPLIER_CODE=...` (codice fornitore fisso da inviare all'intranet; se vuoto usa `COMET_USERNAME`)
 - `COMET_DOWNLOAD_DIR=data/downloads`
+- `COMET_IMPORT_SINCE=2026-01-01` (filtro minimo data DDT in ricerca COMET)
 - `INTRANET_API_URL=...`
 - `INTRANET_API_TOKEN=...`
 - `INTRANET_SEND_PDF_BASE64=true` (se `true`, invia anche il PDF codificato base64 nel payload)
@@ -48,6 +51,14 @@ docker compose up --build -d
 ```
 
 Apri [http://localhost:8787](http://localhost:8787) per Swagger UI.
+
+## Esecuzione produzione (da scheduler esterno)
+
+In produzione la sincronizzazione puo essere chiamata da scheduler esterno (es. Cronicle) via API:
+
+- `GET /getddtdevtec/initial-import` esegue import iniziale completa (COMET + email).
+  - esclude il giorno corrente e importa fino a ieri.
+- `GET /getddtdevtec/daily-sync` sincronizza solo il giorno precedente (COMET + email).
 
 ## Verifiche
 

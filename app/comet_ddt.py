@@ -4,7 +4,8 @@ import base64
 import json
 import re
 import sqlite3
-from datetime import UTC, datetime
+import time
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
@@ -57,6 +58,28 @@ def _init_db() -> sqlite3.Connection:
 def _slug(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value.strip())
     return cleaned.strip("_") or "unknown"
+
+
+def _parse_yyyy_mm_dd(value: str, fallback: date) -> date:
+    raw = (value or "").strip()
+    if not raw:
+        return fallback
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").date()
+    except ValueError:
+        return fallback
+
+
+def _parse_dd_mm_yyyy(value: str) -> date | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+    return None
 
 
 def _extract_document_key(row: dict[str, Any]) -> str:
@@ -207,6 +230,25 @@ def _download_text(session: requests.Session, url: str) -> str:
     return response.text
 
 
+def _fetch_comet_ddt_html(session: requests.Session, from_date: date, to_date: date) -> str:
+    search_url = urljoin(settings.comet_base_url, "/ajax/order-search")
+    payload = {
+        "op": "search",
+        "kind": "ddt",
+        "from": from_date.strftime("%d/%m/%Y"),
+        "to": to_date.strftime("%d/%m/%Y"),
+        "evasi": "true",
+        "u": str(int(time.time() * 1000)),
+    }
+    response = session.post(search_url, data=payload, timeout=60)
+    response.raise_for_status()
+    data = response.json()
+    html = str(data.get("html") or "")
+    if not html:
+        raise ValueError("empty_comet_search_html")
+    return html
+
+
 def _extract_detail_from_csv_text(csv_text: str) -> tuple[list[dict[str, str]], str]:
     lines: list[dict[str, str]] = []
     detail_total = ""
@@ -240,6 +282,101 @@ def _extract_detail_from_csv_text(csv_text: str) -> tuple[list[dict[str, str]], 
         )
 
     return lines, detail_total
+
+
+def _apply_comet_date_filter(page: Any, from_date: date, to_date: date) -> bool:
+    from_str = from_date.strftime("%d/%m/%Y")
+    to_str = to_date.strftime("%d/%m/%Y")
+
+    def _fill_first(locator: Any, value: str) -> bool:
+        count = locator.count()
+        if count <= 0:
+            return False
+        for idx in range(count):
+            candidate = locator.nth(idx)
+            try:
+                candidate.fill(value, timeout=2000)
+                return True
+            except Exception:  # noqa: BLE001
+                continue
+        return False
+
+    # 0) COMET usa principalmente un date-range unico (es. "07/04/2026 - 13/04/2026").
+    range_locator = page.locator("input#date-range, input[name='date-range'], input.input-date-range")
+    if range_locator.count() > 0:
+        range_value = f"{from_str} - {to_str}"
+        try:
+            target = range_locator.first
+            target.fill(range_value, timeout=2000)
+            target.dispatch_event("input")
+            target.dispatch_event("change")
+            page.evaluate(
+                """(value) => {
+                    const input = document.querySelector('#date-range') ||
+                                  document.querySelector('input[name=\"date-range\"]') ||
+                                  document.querySelector('input.input-date-range');
+                    if (input) {
+                        input.value = value;
+                        input.dispatchEvent(new Event('input', { bubbles: true }));
+                        input.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                }""",
+                range_value,
+            )
+            return True
+        except Exception:  # noqa: BLE001
+            pass
+
+    # 1) Tentativo su campi espliciti "Dal"/"Al" legati a label.
+    filled_from = _fill_first(page.get_by_label("Dal", exact=False), from_str)
+    filled_to = _fill_first(page.get_by_label("Al", exact=False), to_str)
+    if filled_from:
+        return True
+
+    # 2) Tentativo su attributi tipici (name/id/placeholder/class).
+    selectors_from = [
+        "input[name*='data'][name*='da']",
+        "input[id*='data'][id*='da']",
+        "input[placeholder*='dal' i]",
+        "input[class*='dal' i]",
+        "input[name*='from' i]",
+        "input[id*='from' i]",
+    ]
+    selectors_to = [
+        "input[name*='data'][name$='a']",
+        "input[id*='data'][id$='a']",
+        "input[placeholder*='al' i]",
+        "input[class*='al' i]",
+        "input[name*='to' i]",
+        "input[id*='to' i]",
+    ]
+
+    for selector in selectors_from:
+        if _fill_first(page.locator(selector), from_str):
+            filled_from = True
+            break
+    for selector in selectors_to:
+        if _fill_first(page.locator(selector), to_str):
+            filled_to = True
+            break
+
+    if filled_from:
+        return True
+
+    # 3) Fallback finale: prende i primi input "date/data" e imposta dal/al.
+    generic_date_inputs = page.locator(
+        "input[type='date'], input[placeholder*='data' i], input[name*='date' i], input[id*='date' i]"
+    )
+    if generic_date_inputs.count() >= 1:
+        try:
+            generic_date_inputs.first.fill(from_str, timeout=2000)
+            filled_from = True
+            if generic_date_inputs.count() > 1 and not filled_to:
+                generic_date_inputs.nth(1).fill(to_str, timeout=2000)
+        except Exception:  # noqa: BLE001
+            pass
+
+    return filled_from
 
 
 def _post_to_intranet(payload: dict[str, Any]) -> dict[str, Any]:
@@ -293,7 +430,7 @@ def _post_to_intranet(payload: dict[str, Any]) -> dict[str, Any]:
         return {"raw_response": response.text}
 
 
-def sync_comet_ddt() -> dict[str, Any]:
+def sync_comet_ddt(*, date_from: date | None = None, date_to: date | None = None) -> dict[str, Any]:
     if not settings.comet_username or not settings.comet_password:
         return {"status": "missing_comet_credentials", "imported_count": 0, "skipped_count": 0}
 
@@ -303,6 +440,12 @@ def sync_comet_ddt() -> dict[str, Any]:
     pdf_dir = download_root / "pdf"
 
     supplier_code = (settings.comet_supplier_code or settings.comet_username or "").strip()
+    default_since = date(2026, 1, 1)
+    import_since = _parse_yyyy_mm_dd(settings.comet_import_since, default_since)
+    sync_from = date_from or import_since
+    sync_to = date_to or datetime.now().date()
+    if sync_to < sync_from:
+        sync_to = sync_from
 
     conn = _init_db()
     imported: list[dict[str, Any]] = []
@@ -331,13 +474,32 @@ def sync_comet_ddt() -> dict[str, Any]:
                 page.locator("button:has-text('Accedi')").first.click()
                 page.wait_for_timeout(2000)
 
-                page.goto(ddt_url, wait_until="domcontentloaded", timeout=60000)
-                page.locator("button:has-text('Cerca')").first.click(timeout=10000)
-                page.wait_for_timeout(2500)
-
-                rows = _extract_rows_from_page(page)
                 user_agent = page.evaluate("() => navigator.userAgent")
                 session = _build_authenticated_session(context.cookies(), user_agent)
+                page.goto(ddt_url, wait_until="domcontentloaded", timeout=60000)
+
+                comet_filter_applied = False
+                try:
+                    search_html = _fetch_comet_ddt_html(session, sync_from, sync_to)
+                    page.set_content(search_html, wait_until="domcontentloaded")
+                    comet_filter_applied = True
+                except Exception:  # noqa: BLE001
+                    # Fallback UI: keeps compatibility if ajax endpoint changes.
+                    comet_filter_applied = _apply_comet_date_filter(page, sync_from, sync_to)
+                    page.locator("button:has-text('Cerca')").first.click(timeout=10000)
+                    page.wait_for_timeout(2500)
+
+                raw_rows = _extract_rows_from_page(page)
+                rows = []
+                for row in raw_rows:
+                    for url_key in ("csv_url", "pdf_url"):
+                        url_value = str(row.get(url_key) or "").strip()
+                        if url_value:
+                            row[url_key] = urljoin(settings.comet_base_url, url_value)
+                    row_date = _parse_dd_mm_yyyy(str(row.get("data_documento", "")))
+                    if row_date and (row_date < sync_from or row_date > sync_to):
+                        continue
+                    rows.append(row)
             finally:
                 browser.close()
 
@@ -474,6 +636,10 @@ def sync_comet_ddt() -> dict[str, Any]:
 
     return {
         "status": "ok",
+        "comet_import_since": import_since.isoformat(),
+        "sync_from": sync_from.isoformat(),
+        "sync_to": sync_to.isoformat(),
+        "comet_filter_applied": comet_filter_applied if "comet_filter_applied" in locals() else False,
         "scanned_count": len(rows),
         "imported_count": len(imported),
         "skipped_count": skipped,
