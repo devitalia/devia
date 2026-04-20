@@ -10,6 +10,7 @@ FastAPI avviabile con Docker. La home `/` apre direttamente Swagger (`/docs`).
 - `DELETE /getddtdevtec/comet/state/{progressive_id}` cancella un DDT importato (e prova a cancellare i file CSV/PDF locali).
 - `GET /getddtdevtec/state` lista i record processati nel DB SQLite.
 - `GET /getddtdevtec/email/sync` elabora nuove email abilitate in `senders.yaml`, legge CSV/PDF allegati e invia i record all'intranet.
+- `GET /getddtdevtec/email/sonepar/replay` ripassa storico email Sonepar e, in base a `dry_run`, simula o applica riallineamento verso intranet solo per DDT con incoerenze riga (`quantita`, `importo`, `prezzo_unitario`).
 - `DELETE /getddtdevtec/state/{progressive_id}` cancella un record tramite progressivo (`rowid` SQLite).
 - `POST /features/echo` endpoint test (menu `EAGLE` in Swagger).
 - `GET /eagle/health` endpoint base dedicato cliente EAGLE.
@@ -59,6 +60,34 @@ In produzione la sincronizzazione puo essere chiamata da scheduler esterno (es. 
 - `GET /getddtdevtec/initial-import` esegue import iniziale completa (COMET + email).
   - esclude il giorno corrente e importa fino a ieri.
 - `GET /getddtdevtec/daily-sync` sincronizza solo il giorno precedente (COMET + email).
+- Tutte le API `getddtdevtec` richiedono token (stesso valore di `INTRANET_API_TOKEN`), via:
+  - query string `?token=...`, oppure
+  - header `Authorization: Bearer ...`.
+
+## CI/CD GitHub + Kubernetes
+
+Su push su `main`, il workflow `.github/workflows/cicd-k8s.yml` esegue:
+
+- build Docker image;
+- push su GHCR (`ghcr.io/devitalia/devia:latest` e `ghcr.io/devitalia/devia:sha-<commit>`);
+- deploy diretto su Kubernetes con `kubectl set image` e verifica rollout.
+
+Secrets richiesti nel repository GitHub:
+
+- `GHCR_USERNAME`: utente/owner con permesso push su `ghcr.io/devitalia/devia`.
+- `GHCR_TOKEN`: token GitHub con scope `write:packages` (e `read:packages`).
+- `KUBE_CONFIG`: kubeconfig completo del cluster target.
+- `K8S_NAMESPACE`: namespace target (default suggerito: `default`).
+- `K8S_DEPLOYMENT_NAME`: deployment da aggiornare (default suggerito: `devia-api`).
+- `K8S_CONTAINER_NAME`: nome container nel deployment (default suggerito: `api`).
+- `K8S_ENV_FILE`: contenuto completo del file `.env` produzione (multiline secret).
+- `K8S_ENV_SECRET_NAME` (opzionale): nome Secret Kubernetes da creare/aggiornare (default `devia-env`).
+
+Il deploy Kubernetes sincronizza automaticamente il secret runtime da `K8S_ENV_FILE`:
+
+- crea/aggiorna il Secret Kubernetes (`devia-env` di default) da env-file;
+- applica le variabili al deployment con `kubectl set env --from=secret/...`;
+- aggiorna immagine e verifica rollout.
 
 ## Verifiche
 

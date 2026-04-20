@@ -272,6 +272,30 @@ def _format_decimal_it(value: Decimal, decimals: int = 2) -> str:
     return f"{normalized}".replace(".", ",")
 
 
+def _payload_for_intranet(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "token": (record.get("token") or "").strip(),
+        "supplier_id": int(record.get("supplier_id") or 0),
+        "testata": dict(record.get("testata") or {}),
+        "righe": [
+            {
+                "n": str(line.get("n", "")),
+                "codice_articolo": str(line.get("codice_articolo", "")),
+                "descrizione": str(line.get("descrizione", "")),
+                "quantita": str(line.get("quantita", "")),
+                "prezzo_unitario": str(line.get("prezzo_unitario", "")),
+                "importo": str(line.get("importo", "")),
+                "uom": str(line.get("uom", "")),
+            }
+            for line in (record.get("righe") or [])
+        ],
+    }
+
+
+def _post_record_to_intranet(record: dict[str, Any]) -> dict[str, Any]:
+    return _post_to_intranet(_payload_for_intranet(record))
+
+
 def _records_from_csv(csv_text: str, supplier_id: int, pdf_bytes: bytes | None) -> list[dict[str, Any]]:
     if not csv_text.strip():
         return []
@@ -388,27 +412,46 @@ def _records_from_csv(csv_text: str, supplier_id: int, pdf_bytes: bytes | None) 
             continue
 
         imp_dec = _to_decimal(importo)
-        pre_dec = _to_decimal(prezzo_unitario)
-        # Regola business: senza prezzo unitario reale non importiamo la riga.
+        pre_dec_raw = _to_decimal(prezzo_unitario)
+        qty_dec = _to_decimal(quantita)
+
+        # Prezzo unitario reale: sempre derivato da importo/quantita quando possibile.
+        pre_dec = Decimal("0")
+        if qty_dec > 0 and imp_dec > 0:
+            try:
+                pre_dec = imp_dec / qty_dec
+            except (InvalidOperation, ArithmeticError):
+                pre_dec = Decimal("0")
+        if pre_dec <= 0:
+            pre_dec = pre_dec_raw
         if pre_dec <= 0:
             continue
         if not quantita and imp_dec > 0 and pre_dec > 0:
             try:
                 q = imp_dec / pre_dec
                 quantita = str(q.quantize(Decimal("0.001")))
+                qty_dec = _to_decimal(quantita)
             except (InvalidOperation, ArithmeticError):
                 pass
+
+        line_mismatch = False
+        if qty_dec > 0 and imp_dec > 0 and pre_dec_raw > 0:
+            expected = pre_dec_raw * qty_dec
+            # Tolleranza minima per arrotondamenti.
+            delta = abs(expected - imp_dec)
+            line_mismatch = delta > Decimal("0.05")
 
         # Totale documento: somma solo delle righe con importo positivo.
         if imp_dec > 0:
             grouped[key]["__total"] += imp_dec
+        grouped[key]["__has_line_mismatch"] = bool(grouped[key].get("__has_line_mismatch")) or line_mismatch
         grouped[key]["righe"].append(
             {
                 "n": str(idx),
                 "codice_articolo": codice,
                 "descrizione": descrizione,
                 "quantita": quantita,
-                "prezzo_unitario": prezzo_unitario,
+                "prezzo_unitario": _format_decimal_it(pre_dec, 5),
                 "importo": importo,
                 "uom": _pick_value(row, ["um", "u.m.", "u.m"]),
             }
@@ -616,7 +659,7 @@ def import_new_messages(*, date_from: date | None = None, date_to: date | None =
                 failed = False
                 for record in records:
                     try:
-                        intranet_results.append(_post_to_intranet(record))
+                        intranet_results.append(_post_record_to_intranet(record))
                     except Exception as exc:  # noqa: BLE001
                         failed = True
                         intranet_results.append({"success": False, "error": str(exc)})
@@ -675,5 +718,160 @@ def import_new_messages(*, date_from: date | None = None, date_to: date | None =
         "scanned_uids": len(uids_to_scan) if "uids_to_scan" in locals() else 0,
         "imported_count": len(imported),
         "imported": imported,
+        "state_db_path": settings.mail_state_db_path,
+    }
+
+
+def replay_sonepar_messages(
+    *,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    dry_run: bool = True,
+    fetch_limit: int = 2000,
+) -> dict[str, Any]:
+    now = datetime.now(UTC)
+    sync_from = date_from or _parse_yyyy_mm_dd(settings.mail_import_since, date(2026, 1, 1))
+    sync_to = date_to or now.date()
+    if sync_to < sync_from:
+        sync_to = sync_from
+
+    rules = _load_sender_rules()
+    sonepar_senders = {email for email in rules if "sonepar" in email}
+    if not sonepar_senders:
+        return {
+            "status": "no_sonepar_rules",
+            "dry_run": dry_run,
+            "sync_from": sync_from.isoformat(),
+            "sync_to": sync_to.isoformat(),
+            "scanned_uids": 0,
+            "candidate_ddt_count": 0,
+            "updated_ddt_count": 0,
+            "updated": [],
+        }
+    if not settings.mail_username or not settings.mail_password:
+        return {
+            "status": "missing_mail_credentials",
+            "dry_run": dry_run,
+            "sync_from": sync_from.isoformat(),
+            "sync_to": sync_to.isoformat(),
+            "scanned_uids": 0,
+            "candidate_ddt_count": 0,
+            "updated_ddt_count": 0,
+            "updated": [],
+        }
+
+    updated: list[dict[str, Any]] = []
+    scanned_uids = 0
+    candidate_ddt_count = 0
+
+    try:
+        with imaplib.IMAP4_SSL(settings.mail_imap_host, settings.mail_imap_port) as mailbox:
+            mailbox.login(settings.mail_username, settings.mail_password)
+            mailbox.select("INBOX")
+
+            next_day = sync_to + timedelta(days=1)
+            status, data = mailbox.uid(
+                "search",
+                None,
+                "SINCE",
+                _to_imap_since(sync_from),
+                "BEFORE",
+                _to_imap_since(next_day),
+            )
+            if status != "OK":
+                return {
+                    "status": "imap_search_error",
+                    "dry_run": dry_run,
+                    "sync_from": sync_from.isoformat(),
+                    "sync_to": sync_to.isoformat(),
+                    "scanned_uids": 0,
+                    "candidate_ddt_count": 0,
+                    "updated_ddt_count": 0,
+                    "updated": [],
+                }
+
+            uids = [u for u in data[0].decode().split() if u]
+            uids_to_scan = list(reversed(uids[-max(1, fetch_limit) :]))
+            for uid in uids_to_scan:
+                scanned_uids += 1
+                status, msg_data = mailbox.uid("fetch", uid, "(RFC822)")
+                if status != "OK" or not msg_data or not msg_data[0]:
+                    continue
+
+                raw = msg_data[0][1]
+                if not raw:
+                    continue
+
+                email_message = message_from_bytes(raw)
+                sender = parseaddr(email_message.get("From", ""))[1].strip().lower()
+                if sender not in sonepar_senders:
+                    continue
+
+                received_at = _parse_received_at(email_message, fallback=now)
+                received_date = received_at.date()
+                if received_date < sync_from or received_date > sync_to:
+                    continue
+
+                sender_rule = rules.get(sender)
+                if not sender_rule or sender_rule.supplier_id <= 0:
+                    continue
+
+                csv_text, pdf_bytes, _pdf_filename = _extract_attachments(email_message)
+                records = _records_from_csv(csv_text, sender_rule.supplier_id, pdf_bytes)
+                if not records:
+                    continue
+
+                mismatch_records = [record for record in records if bool(record.get("__has_line_mismatch"))]
+                if not mismatch_records:
+                    continue
+
+                candidate_ddt_count += len(mismatch_records)
+                if dry_run:
+                    updated.append(
+                        {
+                            "uid": uid,
+                            "sender": sender,
+                            "received_at": received_at.isoformat(),
+                            "records_count": len(mismatch_records),
+                            "action": "would_update",
+                        }
+                    )
+                    continue
+
+                intranet_results: list[dict[str, Any]] = []
+                for record in mismatch_records:
+                    intranet_results.append(_post_record_to_intranet(record))
+                updated.append(
+                    {
+                        "uid": uid,
+                        "sender": sender,
+                        "received_at": received_at.isoformat(),
+                        "records_count": len(mismatch_records),
+                        "action": "updated",
+                        "intranet_results": intranet_results,
+                    }
+                )
+    except (imaplib.IMAP4.error, OSError) as exc:
+        return {
+            "status": "imap_connection_error",
+            "error": str(exc),
+            "dry_run": dry_run,
+            "sync_from": sync_from.isoformat(),
+            "sync_to": sync_to.isoformat(),
+            "scanned_uids": scanned_uids,
+            "candidate_ddt_count": candidate_ddt_count,
+            "updated_ddt_count": len(updated),
+            "updated": updated,
+        }
+
+    return {
+        "status": "ok",
+        "dry_run": dry_run,
+        "sync_from": sync_from.isoformat(),
+        "sync_to": sync_to.isoformat(),
+        "scanned_uids": scanned_uids,
+        "candidate_ddt_count": candidate_ddt_count,
+        "updated_ddt_count": len(updated),
+        "updated": updated,
         "state_db_path": settings.mail_state_db_path,
     }
