@@ -1,5 +1,7 @@
 FROM python:3.11-slim
 
+LABEL org.opencontainers.image.source="https://github.com/devitalia/devia"
+
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
@@ -42,4 +44,4 @@ COPY config ./config
 
 EXPOSE 8787
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8787", "--reload"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8787"]
