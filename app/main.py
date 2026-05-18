@@ -15,6 +15,7 @@ from app.email_ingest import (
     delete_processed_message,
     import_new_messages,
     list_processed_messages,
+    repair_sonepar_ddts,
     replay_sonepar_messages,
 )
 
@@ -146,23 +147,33 @@ def getddtdevtec_email_sync(_: None = Depends(_require_api_token)) -> dict:
     return result
 
 
+@app.get("/getddtdevtec/email/sonepar/repair", tags=["INTRANET"])
+def getddtdevtec_email_sonepar_repair(
+    _: None = Depends(_require_api_token),
+    date_from: str | None = Query(default="2026-01-01"),
+    date_to: str | None = Query(default=None),
+    dry_run: bool = Query(default=True),
+) -> dict[str, dict | str | bool | int | list]:
+    now = datetime.utcnow().date()
+    start = _parse_iso_date_or_400(date_from or "2026-01-01", "date_from")
+    end = now if not date_to else _parse_iso_date_or_400(date_to, "date_to")
+    result = repair_sonepar_ddts(date_from=start, date_to=end, dry_run=dry_run)
+    _raise_if_sync_problem("email_sonepar_repair", result)
+    return result
+
+
 @app.get("/getddtdevtec/email/sonepar/replay", tags=["INTRANET"])
 def getddtdevtec_email_sonepar_replay(
     _: None = Depends(_require_api_token),
-    date_from: str | None = Query(default=None),
+    date_from: str | None = Query(default="2026-01-01"),
     date_to: str | None = Query(default=None),
     dry_run: bool = Query(default=True),
-    fetch_limit: int = Query(default=2000, ge=1, le=10000),
 ) -> dict[str, dict | str | bool | int | list]:
+    """Alias di /email/sonepar/repair (retrocompatibilità)."""
     now = datetime.utcnow().date()
-    start = (now - timedelta(days=30)) if not date_from else _parse_iso_date_or_400(date_from, "date_from")
-    end = (now - timedelta(days=1)) if not date_to else _parse_iso_date_or_400(date_to, "date_to")
-    result = replay_sonepar_messages(
-        date_from=start,
-        date_to=end,
-        dry_run=dry_run,
-        fetch_limit=fetch_limit,
-    )
+    start = _parse_iso_date_or_400(date_from or "2026-01-01", "date_from")
+    end = now if not date_to else _parse_iso_date_or_400(date_to, "date_to")
+    result = replay_sonepar_messages(date_from=start, date_to=end, dry_run=dry_run)
     _raise_if_sync_problem("email_sonepar_replay", result)
     return result
 

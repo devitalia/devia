@@ -235,6 +235,50 @@ def _pick_value(row: dict[str, str], candidates: list[str]) -> str:
     return ""
 
 
+def _pick_sonepar_prezzo_molt(row: dict[str, str], fieldnames: list[str] | None) -> tuple[str, str]:
+    """Colonna O = prezzo listino, colonna P = moltiplicatore (Molt.)."""
+    prezzo = _pick_value(
+        row,
+        [
+            "prezzoxmolt",
+            "prezzoxr",
+            "prezzo x molt",
+            "prezzo x molt.",
+            "prezzo x r",
+            "prezzoxn",
+            "prezzo x n",
+            "prezzo unitario",
+            "prezzo",
+        ],
+    )
+    multi = _pick_value(
+        row,
+        [
+            "molt",
+            "molt.",
+            "moltiplicatore",
+            "multi",
+        ],
+    )
+    if multi or not fieldnames:
+        return prezzo, multi
+
+    prezzo_keys = {
+        "prezzoxmolt",
+        "prezzoxr",
+        "prezzoxn",
+        "prezzo",
+        "prezzounitario",
+    }
+    for index, header in enumerate(fieldnames):
+        norm = _normalize_key(header)
+        if norm in prezzo_keys or norm.startswith("prezzo"):
+            if index + 1 < len(fieldnames):
+                multi = str(row.get(fieldnames[index + 1], "")).strip()
+            break
+    return prezzo, multi
+
+
 def _to_iso_date(value: str) -> str:
     value = (value or "").strip()
     match = re.match(r"^(\d{2})/(\d{2})/(\d{4})$", value)
@@ -272,6 +316,17 @@ def _format_decimal_it(value: Decimal, decimals: int = 2) -> str:
     return f"{normalized}".replace(".", ",")
 
 
+def _unit_price_from_sonepar_listino(prezzo: Decimal, multi: Decimal) -> Decimal:
+    """Prezzo listino Sonepar: unitario = prezzo / multi (multi=1 -> prezzo, multi=100 -> prezzo/100)."""
+    if prezzo <= 0:
+        return Decimal("0")
+    divisor = multi if multi > 0 else Decimal("1")
+    try:
+        return prezzo / divisor
+    except (InvalidOperation, ArithmeticError):
+        return Decimal("0")
+
+
 def _payload_for_intranet(record: dict[str, Any]) -> dict[str, Any]:
     return {
         "token": (record.get("token") or "").strip(),
@@ -292,8 +347,8 @@ def _payload_for_intranet(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _post_record_to_intranet(record: dict[str, Any]) -> dict[str, Any]:
-    return _post_to_intranet(_payload_for_intranet(record))
+def _post_record_to_intranet(record: dict[str, Any], *, repair_linked: bool = False) -> dict[str, Any]:
+    return _post_to_intranet(_payload_for_intranet(record), repair_linked=repair_linked)
 
 
 def _records_from_csv(csv_text: str, supplier_id: int, pdf_bytes: bytes | None) -> list[dict[str, Any]]:
@@ -380,18 +435,7 @@ def _records_from_csv(csv_text: str, supplier_id: int, pdf_bytes: bytes | None) 
                 "qta",
             ],
         )
-        prezzo_unitario = _pick_value(
-            row,
-            [
-                "prezzoxmolt",
-                "prezzo x molt",
-                "prezzo x molt.",
-                "prezzoxn",
-                "prezzo x n",
-                "prezzo unitario",
-                "prezzo",
-            ],
-        )
+        prezzo_unitario, multi = _pick_sonepar_prezzo_molt(row, reader.fieldnames)
         importo = _pick_value(
             row,
             [
@@ -413,38 +457,19 @@ def _records_from_csv(csv_text: str, supplier_id: int, pdf_bytes: bytes | None) 
 
         imp_dec = _to_decimal(importo)
         pre_dec_raw = _to_decimal(prezzo_unitario)
+        multi_dec = _to_decimal(multi)
         qty_dec = _to_decimal(quantita)
 
-        # Prezzo unitario reale: sempre derivato da importo/quantita quando possibile.
-        pre_dec = Decimal("0")
-        if qty_dec > 0 and imp_dec > 0:
-            try:
-                pre_dec = imp_dec / qty_dec
-            except (InvalidOperation, ArithmeticError):
-                pre_dec = Decimal("0")
-        if pre_dec <= 0:
-            pre_dec = pre_dec_raw
+        if pre_dec_raw <= 0 or multi_dec <= 0:
+            continue
+
+        pre_dec = _unit_price_from_sonepar_listino(pre_dec_raw, multi_dec)
         if pre_dec <= 0:
             continue
-        if not quantita and imp_dec > 0 and pre_dec > 0:
-            try:
-                q = imp_dec / pre_dec
-                quantita = str(q.quantize(Decimal("0.001")))
-                qty_dec = _to_decimal(quantita)
-            except (InvalidOperation, ArithmeticError):
-                pass
-
-        line_mismatch = False
-        if qty_dec > 0 and imp_dec > 0 and pre_dec_raw > 0:
-            expected = pre_dec_raw * qty_dec
-            # Tolleranza minima per arrotondamenti.
-            delta = abs(expected - imp_dec)
-            line_mismatch = delta > Decimal("0.05")
 
         # Totale documento: somma solo delle righe con importo positivo.
         if imp_dec > 0:
             grouped[key]["__total"] += imp_dec
-        grouped[key]["__has_line_mismatch"] = bool(grouped[key].get("__has_line_mismatch")) or line_mismatch
         grouped[key]["righe"].append(
             {
                 "n": str(idx),
@@ -466,14 +491,18 @@ def _records_from_csv(csv_text: str, supplier_id: int, pdf_bytes: bytes | None) 
     return records
 
 
-def _post_to_intranet(payload: dict[str, Any]) -> dict[str, Any]:
+def _post_to_intranet(payload: dict[str, Any], *, repair_linked: bool = False) -> dict[str, Any]:
     headers: dict[str, str] = {
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
+    params: dict[str, str] = {}
+    if repair_linked:
+        params["repair_linked"] = "1"
     response = requests.post(
         settings.intranet_api_url,
         json=payload,
+        params=params,
         headers=headers,
         timeout=60,
     )
@@ -722,47 +751,43 @@ def import_new_messages(*, date_from: date | None = None, date_to: date | None =
     }
 
 
-def replay_sonepar_messages(
+def repair_sonepar_ddts(
     *,
     date_from: date | None = None,
     date_to: date | None = None,
     dry_run: bool = True,
-    fetch_limit: int = 2000,
 ) -> dict[str, Any]:
+    """Riscorre email Sonepar e riallinea DDT esterni + righe abbinate su intranet (prezzo = listino / Molt.)."""
     now = datetime.now(UTC)
-    sync_from = date_from or _parse_yyyy_mm_dd(settings.mail_import_since, date(2026, 1, 1))
+    sync_from = date_from or date(2026, 1, 1)
     sync_to = date_to or now.date()
     if sync_to < sync_from:
         sync_to = sync_from
 
     rules = _load_sender_rules()
     sonepar_senders = {email for email in rules if "sonepar" in email}
+    empty = {
+        "dry_run": dry_run,
+        "sync_from": sync_from.isoformat(),
+        "sync_to": sync_to.isoformat(),
+        "scanned_uids": 0,
+        "scanned_messages": 0,
+        "ddt_count": 0,
+        "posted_ddt_count": 0,
+        "results": [],
+    }
     if not sonepar_senders:
-        return {
-            "status": "no_sonepar_rules",
-            "dry_run": dry_run,
-            "sync_from": sync_from.isoformat(),
-            "sync_to": sync_to.isoformat(),
-            "scanned_uids": 0,
-            "candidate_ddt_count": 0,
-            "updated_ddt_count": 0,
-            "updated": [],
-        }
+        return {**empty, "status": "no_sonepar_rules"}
     if not settings.mail_username or not settings.mail_password:
-        return {
-            "status": "missing_mail_credentials",
-            "dry_run": dry_run,
-            "sync_from": sync_from.isoformat(),
-            "sync_to": sync_to.isoformat(),
-            "scanned_uids": 0,
-            "candidate_ddt_count": 0,
-            "updated_ddt_count": 0,
-            "updated": [],
-        }
+        return {**empty, "status": "missing_mail_credentials"}
+    if not settings.intranet_api_url:
+        return {**empty, "status": "missing_intranet_api_url"}
 
-    updated: list[dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
     scanned_uids = 0
-    candidate_ddt_count = 0
+    scanned_messages = 0
+    ddt_count = 0
+    posted_ddt_count = 0
 
     try:
         with imaplib.IMAP4_SSL(settings.mail_imap_host, settings.mail_imap_port) as mailbox:
@@ -779,20 +804,10 @@ def replay_sonepar_messages(
                 _to_imap_since(next_day),
             )
             if status != "OK":
-                return {
-                    "status": "imap_search_error",
-                    "dry_run": dry_run,
-                    "sync_from": sync_from.isoformat(),
-                    "sync_to": sync_to.isoformat(),
-                    "scanned_uids": 0,
-                    "candidate_ddt_count": 0,
-                    "updated_ddt_count": 0,
-                    "updated": [],
-                }
+                return {**empty, "status": "imap_search_error"}
 
             uids = [u for u in data[0].decode().split() if u]
-            uids_to_scan = list(reversed(uids[-max(1, fetch_limit) :]))
-            for uid in uids_to_scan:
+            for uid in reversed(uids):
                 scanned_uids += 1
                 status, msg_data = mailbox.uid("fetch", uid, "(RFC822)")
                 if status != "OK" or not msg_data or not msg_data[0]:
@@ -821,47 +836,44 @@ def replay_sonepar_messages(
                 if not records:
                     continue
 
-                mismatch_records = [record for record in records if bool(record.get("__has_line_mismatch"))]
-                if not mismatch_records:
-                    continue
+                scanned_messages += 1
+                ddt_count += len(records)
 
-                candidate_ddt_count += len(mismatch_records)
+                message_result: dict[str, Any] = {
+                    "uid": uid,
+                    "sender": sender,
+                    "received_at": received_at.isoformat(),
+                    "records_count": len(records),
+                    "numero_documenti": [
+                        str((record.get("testata") or {}).get("numero_documento", ""))
+                        for record in records
+                    ],
+                }
+
                 if dry_run:
-                    updated.append(
-                        {
-                            "uid": uid,
-                            "sender": sender,
-                            "received_at": received_at.isoformat(),
-                            "records_count": len(mismatch_records),
-                            "action": "would_update",
-                        }
-                    )
+                    message_result["action"] = "would_repair"
+                    results.append(message_result)
                     continue
 
                 intranet_results: list[dict[str, Any]] = []
-                for record in mismatch_records:
-                    intranet_results.append(_post_record_to_intranet(record))
-                updated.append(
-                    {
-                        "uid": uid,
-                        "sender": sender,
-                        "received_at": received_at.isoformat(),
-                        "records_count": len(mismatch_records),
-                        "action": "updated",
-                        "intranet_results": intranet_results,
-                    }
-                )
+                for record in records:
+                    intranet_results.append(_post_record_to_intranet(record, repair_linked=True))
+                    posted_ddt_count += 1
+
+                message_result["action"] = "repaired"
+                message_result["intranet_results"] = intranet_results
+                results.append(message_result)
+
     except (imaplib.IMAP4.error, OSError) as exc:
         return {
+            **empty,
             "status": "imap_connection_error",
             "error": str(exc),
-            "dry_run": dry_run,
-            "sync_from": sync_from.isoformat(),
-            "sync_to": sync_to.isoformat(),
             "scanned_uids": scanned_uids,
-            "candidate_ddt_count": candidate_ddt_count,
-            "updated_ddt_count": len(updated),
-            "updated": updated,
+            "scanned_messages": scanned_messages,
+            "ddt_count": ddt_count,
+            "posted_ddt_count": posted_ddt_count,
+            "results": results,
         }
 
     return {
@@ -870,8 +882,20 @@ def replay_sonepar_messages(
         "sync_from": sync_from.isoformat(),
         "sync_to": sync_to.isoformat(),
         "scanned_uids": scanned_uids,
-        "candidate_ddt_count": candidate_ddt_count,
-        "updated_ddt_count": len(updated),
-        "updated": updated,
+        "scanned_messages": scanned_messages,
+        "ddt_count": ddt_count,
+        "posted_ddt_count": posted_ddt_count,
+        "results": results,
         "state_db_path": settings.mail_state_db_path,
     }
+
+
+def replay_sonepar_messages(
+    *,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    dry_run: bool = True,
+    fetch_limit: int = 2000,
+) -> dict[str, Any]:
+    del fetch_limit
+    return repair_sonepar_ddts(date_from=date_from, date_to=date_to, dry_run=dry_run)
